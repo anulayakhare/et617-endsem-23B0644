@@ -7,7 +7,7 @@ import handler from '../api/feedback.mjs';
 import { feedbackEvidence, validateEvidence } from '../feedback-evidence.mjs';
 import { generateFeedback } from '../server/gemini.mjs';
 import { controls, draftFeedback, simulate } from '../lab.mjs';
-import { teacherAuthorization, validTeacherSecret } from '../teacher-access.mjs';
+import { teacherAuthorization, teacherSecretIssue } from '../teacher-access.mjs';
 
 function submission(misconception) {
   const pair = ['Aluminium', 'Steel'].map(material => simulate(material, 50));
@@ -58,16 +58,19 @@ test('teacher access code encoding supports printable Unicode and spaces without
   const header = new Headers({ Authorization: teacherAuthorization(code) }).get('authorization');
   assert.match(header, /^Bearer [A-Za-z0-9_-]+$/);
   assert.equal(Buffer.from(header.slice(7), 'base64url').toString('utf8'), code);
-  assert.equal(validTeacherSecret(code), true);
-  assert.equal(validTeacherSecret(' short code    '), false);
-  assert.equal(validTeacherSecret('long code with\na newline'), false);
+  assert.equal(teacherSecretIssue(code), null);
+  assert.equal(teacherSecretIssue(undefined), 'TEACHER_ACCESS_CODE_MISSING');
+  assert.equal(teacherSecretIssue(' short code    '), 'TEACHER_ACCESS_CODE_TOO_SHORT');
+  assert.equal(teacherSecretIssue('long code with\na newline'), 'TEACHER_ACCESS_CODE_CONTROL_CHARACTER');
+  assert.equal(teacherSecretIssue('x'.repeat(257)), 'TEACHER_ACCESS_CODE_TOO_LONG');
 });
 
-test('HTTP handler validates access, size, rate limit and optional real Gemini generation', async () => {
+test('HTTP handler validates access, size, rate limit and optional real Gemini generation', async t => {
   const originalKey = process.env.GEMINI_API_KEY;
   const originalCode = process.env.TEACHER_ACCESS_CODE;
   const originalEnvironment = process.env.VERCEL_ENV;
   const originalFetch = globalThis.fetch;
+  const warning = t.mock.method(console, 'warn', () => {});
   const code = ' ' + randomBytes(18).toString('hex') + ' café 🔬 ';
   const real = process.env.RUN_LIVE_GEMINI === '1';
   if (real) assert.ok(originalKey, 'GEMINI_API_KEY is required for the live test');
@@ -84,12 +87,25 @@ test('HTTP handler validates access, size, rate limit and optional real Gemini g
     });
     const input = feedbackEvidence(submission(false));
     assert.equal((await fetch(url)).status, 405);
-    assert.equal((await send(input)).status, 503);
+    delete process.env.VERCEL_ENV;
+    const unconfigured = await send(input);
+    assert.equal(unconfigured.status, 503);
+    assert.deepEqual(await unconfigured.json(), { error: 'unavailable' });
+    assert.deepEqual(warning.mock.calls[0].arguments, [
+      '[feedback] Configuration unavailable:', 'VERCEL_ENV_MISSING, GEMINI_API_KEY_MISSING',
+    ]);
     assert.equal((await send('x'.repeat(2048))).status, 413);
     process.env.GEMINI_API_KEY = real ? originalKey : 'fixture-configured';
     process.env.VERCEL_ENV = 'production';
     assert.equal((await send(input)).status, 503);
+    assert.equal(warning.mock.callCount(), 1);
     process.env.VERCEL_ENV = 'preview';
+    process.env.TEACHER_ACCESS_CODE = 'short';
+    assert.equal((await send(input)).status, 503);
+    assert.deepEqual(warning.mock.calls[1].arguments, [
+      '[feedback] Configuration unavailable:', 'TEACHER_ACCESS_CODE_TOO_SHORT',
+    ]);
+    process.env.TEACHER_ACCESS_CODE = code;
     assert.equal((await send(input, code.trim())).status, 401);
     assert.equal((await send({})).status, 400);
     if (!real) {

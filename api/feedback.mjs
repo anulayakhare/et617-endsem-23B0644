@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { validateEvidence } from '../feedback-evidence.mjs';
 import { generateFeedback, model } from '../server/gemini.mjs';
-import { teacherAuthorization, validTeacherSecret } from '../teacher-access.mjs';
+import { teacherAuthorization, teacherSecretIssue } from '../teacher-access.mjs';
 
 const maxBytes = 2048;
 const minute = 60_000;
@@ -41,7 +41,14 @@ export default async function handler(req, res) {
   if (Number(req.headers['content-length']) > maxBytes) return reply(413, { error: 'size' });
   const key = process.env.GEMINI_API_KEY;
   const secret = process.env.TEACHER_ACCESS_CODE;
-  if (process.env.VERCEL_ENV !== 'preview' || !key || !validTeacherSecret(secret)) {
+  const target = process.env.VERCEL_ENV;
+  const issues = [
+    target === 'preview' ? null : target ? 'VERCEL_ENV_NOT_PREVIEW' : 'VERCEL_ENV_MISSING',
+    key ? null : 'GEMINI_API_KEY_MISSING',
+    teacherSecretIssue(secret),
+  ].filter(Boolean);
+  if (issues.length) {
+    if (target !== 'production') console.warn('[feedback] Configuration unavailable:', issues.join(', '));
     return reply(503, { error: 'unavailable' });
   }
   const client = req.headers['x-vercel-forwarded-for'] ?? req.socket.remoteAddress ?? 'local';

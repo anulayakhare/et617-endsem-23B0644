@@ -6,7 +6,10 @@ export function teacherAuthorization(code) {
   return 'Bearer ' + token;
 }
 
-export function validTeacherSecret(code) {
-  return typeof code === 'string' && code.length <= 256
-    && Array.from(code.trim()).length >= 16 && !/\p{Cc}/u.test(code);
+export function teacherSecretIssue(code) {
+  if (!code) return 'TEACHER_ACCESS_CODE_MISSING';
+  if (code.length > 256) return 'TEACHER_ACCESS_CODE_TOO_LONG';
+  if (/\p{Cc}/u.test(code)) return 'TEACHER_ACCESS_CODE_CONTROL_CHARACTER';
+  if (Array.from(code.trim()).length < 16) return 'TEACHER_ACCESS_CODE_TOO_SHORT';
+  return null;
 }
