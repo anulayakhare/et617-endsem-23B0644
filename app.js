@@ -1,5 +1,6 @@
 import { materials, settings, cool, simulate, watts, sample, controls, compare, draftFeedback } from './lab.mjs';
 import { feedbackEvidence } from './feedback-evidence.mjs';
+import { teacherAuthorization } from './teacher-access.mjs';
 
 const key = 'et617-conduction-v1';
 const steps = { predict: 'Predict', experiment: 'Run tests', investigate: 'Investigate', revise: 'Revise claim', transfer: 'Explain', notebook: 'Notebook' };
@@ -379,7 +380,7 @@ async function requestDraft(formElement, review) {
   if (!review || pendingDraft) return;
   if (Date.now() < nextRequest) return feedback('Wait a few seconds before asking for another draft. You can use the rule-based draft meanwhile.');
   const code = new FormData(formElement).get('accessCode');
-  if (!code || !/^[\x21-\x7e]{16,256}$/.test(code)) return feedback('Enter a valid teacher access code to request a draft.');
+  if (typeof code !== 'string' || !code.length) return feedback('Enter your teacher access code to request a draft.');
 
   const controller = new AbortController();
   pendingDraft = controller;
@@ -388,9 +389,10 @@ async function requestDraft(formElement, review) {
   let result;
   let serviceStatus;
   try {
-    const response = await fetch('./api/feedback', {
+    const response = await fetch('/api/feedback', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + code },
+      headers: { 'Content-Type': 'application/json', Authorization: teacherAuthorization(code) },
+      credentials: 'same-origin',
       signal: AbortSignal.any([controller.signal, AbortSignal.timeout(13000)]),
       cache: 'no-store',
       body: JSON.stringify(feedbackEvidence(review.evidence)),
@@ -413,7 +415,8 @@ async function requestDraft(formElement, review) {
     return feedback('Gemini draft ready for teacher review.');
   }
   teacherDrafts.delete(review);
-  const reason = serviceStatus === 401 ? 'The teacher access code was not accepted.'
+  const reason = serviceStatus === 401 ? 'The request was not authorized. Check that you are signed in to the Preview and entered the exact teacher access code.'
+    : serviceStatus === 503 ? 'Gemini is unavailable on this deployment. Check the Preview configuration.'
     : serviceStatus === 429 ? 'The feedback service has reached its request limit.' : 'Gemini feedback is unavailable.';
   feedback(reason + ' The rule-based fallback is ready for review.');
 }

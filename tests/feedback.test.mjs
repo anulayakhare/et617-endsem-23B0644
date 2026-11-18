@@ -7,6 +7,7 @@ import handler from '../api/feedback.mjs';
 import { feedbackEvidence, validateEvidence } from '../feedback-evidence.mjs';
 import { generateFeedback } from '../server/gemini.mjs';
 import { controls, draftFeedback, simulate } from '../lab.mjs';
+import { teacherAuthorization, validTeacherSecret } from '../teacher-access.mjs';
 
 function submission(misconception) {
   const pair = ['Aluminium', 'Steel'].map(material => simulate(material, 50));
@@ -52,11 +53,22 @@ test('rejects invalid Gemini output and invented readings', async () => {
   await assert.rejects(generateFeedback(evidence, 'unused', mock({ ...draft, spoon: '<script>bad</script>' })), /Invalid AI draft/);
 });
 
+test('teacher access code encoding supports printable Unicode and spaces without changing the value', () => {
+  const code = ' Synthetic café 🔬 phrase  ';
+  const header = new Headers({ Authorization: teacherAuthorization(code) }).get('authorization');
+  assert.match(header, /^Bearer [A-Za-z0-9_-]+$/);
+  assert.equal(Buffer.from(header.slice(7), 'base64url').toString('utf8'), code);
+  assert.equal(validTeacherSecret(code), true);
+  assert.equal(validTeacherSecret(' short code    '), false);
+  assert.equal(validTeacherSecret('long code with\na newline'), false);
+});
+
 test('HTTP handler validates access, size, rate limit and optional real Gemini generation', async () => {
   const originalKey = process.env.GEMINI_API_KEY;
   const originalCode = process.env.TEACHER_ACCESS_CODE;
   const originalEnvironment = process.env.VERCEL_ENV;
-  const code = randomBytes(18).toString('hex');
+  const originalFetch = globalThis.fetch;
+  const code = ' ' + randomBytes(18).toString('hex') + ' café 🔬 ';
   const real = process.env.RUN_LIVE_GEMINI === '1';
   if (real) assert.ok(originalKey, 'GEMINI_API_KEY is required for the live test');
   process.env.TEACHER_ACCESS_CODE = code;
@@ -67,7 +79,7 @@ test('HTTP handler validates access, size, rate limit and optional real Gemini g
     const url = 'http://127.0.0.1:' + server.address().port + '/api/feedback';
     const send = (body, auth = code) => fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + auth },
+      headers: { 'content-type': 'application/json', authorization: teacherAuthorization(auth) },
       body: JSON.stringify(body),
     });
     const input = feedbackEvidence(submission(false));
@@ -78,23 +90,30 @@ test('HTTP handler validates access, size, rate limit and optional real Gemini g
     process.env.VERCEL_ENV = 'production';
     assert.equal((await send(input)).status, 503);
     process.env.VERCEL_ENV = 'preview';
-    assert.equal((await send(input, 'wrong')).status, 401);
+    assert.equal((await send(input, code.trim())).status, 401);
     assert.equal((await send({})).status, 400);
-    if (real) {
-      for (const work of [submission(false), submission(true)]) {
-        const response = await send(feedbackEvidence(work));
-        assert.equal(response.status, 200, 'Real Gemini endpoint generation failed');
-        const data = await response.json();
-        assert.equal(data.source, 'gemini');
-        assert.equal(data.model, 'gemini-3.1-flash-lite');
-        assert.ok(data.draft.length >= 36);
-      }
-    } else {
-      assert.equal((await send({})).status, 400);
-      assert.equal((await send({})).status, 400);
+    if (!real) {
+      globalThis.fetch = (url, options) => {
+        if (!String(url).startsWith('https://generativelanguage.googleapis.com/')) return originalFetch(url, options);
+        return Promise.resolve(Response.json({ candidates: [{
+          finishReason: 'STOP',
+          content: { parts: [{ text: JSON.stringify({
+            investigation: 'You measured 6 W for aluminium.', spoon: 'Check both thermometers.', nextStep: 'Explain what changed.',
+          }) }] },
+        }] }));
+      };
+    }
+    for (const work of [submission(false), submission(true)]) {
+      const response = await send(feedbackEvidence(work));
+      assert.equal(response.status, 200, 'Gemini endpoint generation failed');
+      const data = await response.json();
+      assert.equal(data.source, 'gemini');
+      assert.equal(data.model, 'gemini-3.1-flash-lite');
+      assert.ok(data.draft.length >= 36);
     }
     assert.equal((await send(input)).status, 429);
   } finally {
+    globalThis.fetch = originalFetch;
     if (originalKey === undefined) delete process.env.GEMINI_API_KEY;
     else process.env.GEMINI_API_KEY = originalKey;
     if (originalCode === undefined) delete process.env.TEACHER_ACCESS_CODE;
