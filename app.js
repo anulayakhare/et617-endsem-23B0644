@@ -1,4 +1,5 @@
 import { materials, settings, cool, simulate, watts, sample, controls, compare, draftFeedback } from './lab.mjs';
+import { feedbackEvidence } from './feedback-evidence.mjs';
 
 const key = 'et617-conduction-v1';
 const steps = { predict: 'Predict', experiment: 'Run tests', investigate: 'Investigate', revise: 'Revise claim', transfer: 'Explain', notebook: 'Notebook' };
@@ -15,6 +16,10 @@ try {
 const app = document.querySelector('#app');
 let message = '';
 let active = '';
+const teacherDrafts = new Map();
+let pendingDraft;
+let nextRequest = 0;
+const geminiDemo = document.querySelector('meta[name="gemini-demo"]')?.content === 'enabled';
 if (!location.hash) history.replaceState(null, '', '#' + state.section);
 
 function save() {
@@ -54,6 +59,18 @@ function table(runs, caption, highlightWarm = false) {
     </tr></thead><tbody>${runs.map(run => `<tr>
     <td>${run.id ?? 'Sample'}</td><td>${run.material}</td><td>${highlightWarm ? '<mark>' : ''}${run.warm} °C${highlightWarm ? '</mark>' : ''}</td><td>${run.cool} °C</td><td>${watts(run)}</td>
     </tr>`).join('')}</tbody></table></div>`;
+}
+
+function chart(runs, title) {
+  if (!runs.length) return '';
+  return `<figure class="rate-chart">
+    <figcaption>${title} <small>Heat-transfer rate · 0–10 W</small></figcaption>
+    <ol role="list">${runs.map(run => `<li>
+      <span>${run.id ? 'Run ' + run.id + ' · ' : ''}${run.material} · ${run.warm} °C</span>
+      <strong>${watts(run)}</strong>
+      <div aria-hidden="true" class="rate-track"><div style="width:${run.rate * 10}%"></div></div>
+    </li>`).join('')}</ol>
+  </figure>`;
 }
 
 const runOptions = () => state.runs.map(run => [run.id, `Run ${run.id} · ${run.material} at ${run.warm} °C`]);
@@ -102,14 +119,16 @@ const screens = {
         + `<fieldset><legend>What should be the same in both runs?</legend>${controls.map(item =>
           `<label class="option"><input type="checkbox" name="fixed" value="${item}" ${draft.fixed?.includes(item) ? 'checked' : ''}> ${item}</label>`).join('')}</fieldset>`
         + actions(button('Check comparison'), hintButton('pair'))))
-      + (findRun(draft.first) && findRun(draft.second)
-        ? table([findRun(draft.first), findRun(draft.second)], 'Selected setups', state.hints.pair > 1) : '')
+      + '<div data-selected-runs>' + (findRun(draft.first) && findRun(draft.second)
+        ? table([findRun(draft.first), findRun(draft.second)], 'Selected setups', state.hints.pair > 1)
+          + chart([findRun(draft.first), findRun(draft.second)], 'Compare selected runs') : '') + '</div>'
       + showHints('pair') + (state.done.pair ? actions(link('investigate', 'Go to Investigate')) : '') + '</section>';
   },
   investigate() {
     const draft = getDraft('investigate');
     return heading('Investigate a surprising result', 'A lab notebook shows steel transferring more energy each second in this pair.')
       + table(sample, 'Sample comparison', state.hints.investigate > 1)
+      + chart(sample, 'Compare the sample runs')
       + form('investigate', select('What can you conclude from these two runs?', 'answer', [
         ['steel', 'Steel conducts better because its reading is higher.'],
         ['both', 'Both material and warm-end temperature changed. I need a fair test.'],
@@ -131,7 +150,7 @@ const screens = {
     return heading('Revise your claim', 'Add a dry wood run and compare all three materials at the same setting.')
       + (prediction ? note(`Your first prediction was ${prediction.material}. Your reason was “${prediction.reason}”`) : '')
       + (warm ? note(`Your retest used a warm end of ${warm} °C. Use that setting for dry wood.`)
-        + table([...state.done.retest, ...state.runs.filter(run => run.material === 'Dry wood' && run.warm === warm).slice(-1)], 'Matched readings')
+        + table(matchedReadings(warm), 'Matched readings') + chart(matchedReadings(warm), 'Compare at the same temperature')
         : '<p><a href="#investigate">Save your retest first.</a></p>')
       + rig('revise-rig') + form('revise',
         select('Fastest', 'first', options, draft.first)
@@ -143,6 +162,10 @@ const screens = {
         + actions(button('Save revised claim'), link('transfer', 'Go to Explain')));
   },
 };
+
+function matchedReadings(warm) {
+  return [...state.done.retest, ...state.runs.filter(run => run.material === 'Dry wood' && run.warm === warm).slice(-1)];
+}
 
 function retestOptions() {
   return [...runOptions(), ...sample.map((run, i) => ['sample' + i, `Sample · ${run.material} at ${run.warm} °C`])];
@@ -186,8 +209,14 @@ function evidenceDetails(evidence) {
 }
 
 const outcomes = ['O1 · Fair comparison', 'O2 · Evidence and revision', 'O3 · Spoon explanation'];
+const reviewStatus = review => !review.text ? 'Pending'
+  : ['Overridden', 'Teacher override shared'].includes(review.status) ? 'Overridden' : 'Approved';
+const sourceLabel = source => ({ gemini: 'Gemini', teacher: 'Teacher override', rules: 'Rule-based fallback' })[source];
+const reviewedSource = review => review.source ?? (reviewStatus(review) === 'Overridden' ? 'teacher' : 'rules');
+
 function released(review) {
-  return note(review.text) + details(outcomes.map((label, i) => [label, review.outcomes[i]]));
+  return note(review.text) + details([['Feedback source', sourceLabel(reviewedSource(review))],
+    ...outcomes.map((label, i) => [label, review.outcomes[i]])]);
 }
 
 screens.notebook = function () {
@@ -197,10 +226,22 @@ screens.notebook = function () {
     + (state.done.revise ? details([['Latest claim', `${state.done.revise.decision}. ${state.done.revise.reason}`]]) : '')
     + table(state.runs, 'All saved runs')
     + form('submit', actions(button('Send work for teacher review')))
-    + state.reviews.map(review => `<section class="review"><h2>Submission ${review.id}</h2>
+    + state.reviews.map(review => `<section class="review"><h2>Submission ${review.id} · ${reviewStatus(review)}</h2>
       ${review.text ? released(review) : note('Waiting for teacher review. You can keep exploring.')}
       <details><summary>Work sent with this submission</summary>${evidenceDetails(review.evidence)}</details></section>`).join('');
 };
+
+function suggestedDraft(review) {
+  return teacherDrafts.get(review) ?? { source: 'rules', text: review.draft ?? draftFeedback(review.evidence) };
+}
+
+function generationForm(review) {
+  if (!geminiDemo) return '<p class="muted">This deployment uses rule-based feedback.</p>';
+  return form('generate-' + review.id,
+    '<label>Teacher access code<input type="password" name="accessCode" required maxlength="256" autocomplete="off"></label>'
+      + actions(`<button ${pendingDraft ? 'disabled' : ''}>Generate Gemini draft</button>`)
+      + '<small>Use synthetic learner work for the adult examiner demo.</small>');
+}
 
 screens.teacher = function () {
   return heading('Teacher dashboard', 'Review this browser’s learner work and decide which feedback to share.')
@@ -213,9 +254,11 @@ screens.teacher = function () {
     + (state.reviews.length ? state.reviews.map(review => {
       const id = 'review-' + review.id;
       const draft = getDraft(id);
-      return `<section class="review"><h2>Submission ${review.id} · ${review.text ? review.status : 'Pending'}</h2>`
+      const suggestion = suggestedDraft(review);
+      return `<section class="review"><h2>Submission ${review.id} · ${reviewStatus(review)}</h2>`
         + evidenceDetails(review.evidence)
-        + '<h3>Suggested feedback</h3>' + details([['Draft from lab rules', review.draft]])
+        + '<h3>Suggested feedback</h3>' + details([[sourceLabel(suggestion.source), suggestion.text]])
+        + generationForm(review)
         + (review.text ? '<h3>Shared with learner</h3>' + released(review) : '')
         + form(id, outcomes.map((label, i) => select(label, 'outcome' + i,
           [['Needs review', 'Needs review'], ['Demonstrated', 'Demonstrated'], ['Revise', 'Revise']],
@@ -232,7 +275,7 @@ screens.about = function () {
     + details([['Roll number', '23B0644'], ['Exam card', 'P5-T9-L5-C5']])
     + '<h2>How the lab calculates a reading</h2><p>Heat-transfer rate = rate factor × (warm-end temperature − 20 °C). The factors are 0.20 W/°C for aluminium, 0.10 W/°C for steel and 0.005 W/°C for dry wood.</p>'
     + '<p>The rods have the same geometry and steady end temperatures. The factors are illustrative. Warm-up time and heat loss to the room are outside this model. The spoon task explains the initial sensation qualitatively.</p>'
-    + '<h2>Saved work</h2><p>Work stays in this browser. The learner and teacher use the same browser profile for review. The teacher view is available from the menu. Feedback suggestions use rules based on the submitted answers.</p>'
+    + '<h2>Saved work</h2><p>Work stays in this browser. The learner and teacher use the same browser profile for review. The public lab uses rule-based feedback. An adult examiner demo can generate a Gemini draft from fixed lab choices and concept flags. Written answers stay in the browser.</p>'
     + actions(link(state.section, 'Return to lab'));
 };
 
@@ -300,9 +343,28 @@ function checkPair(data, retest) {
 
 app.addEventListener('input', event => {
   const formElement = event.target.closest('form[data-form]');
-  if (!formElement) return;
-  capture(formElement);
+  if (!formElement || formElement.dataset.form.startsWith('generate-')) return;
+  const data = capture(formElement);
   if (event.target.name === 'warm') formElement.querySelector('[data-warm]').textContent = event.target.value || '—';
+  if (formElement.dataset.form === 'pair' && ['first', 'second'].includes(event.target.name)) {
+    const runs = [findRun(data.first), findRun(data.second)];
+    app.querySelector('[data-selected-runs]').innerHTML = runs.every(Boolean)
+      ? table(runs, 'Selected setups', state.hints.pair > 1) + chart(runs, 'Compare selected runs') : '';
+  }
+});
+
+document.querySelector('#new-session').addEventListener('click', () => {
+  if (!window.confirm('Start a new session? This clears this browser’s saved predictions, runs, submissions and teacher feedback.')) return;
+  pendingDraft?.abort();
+  pendingDraft = undefined;
+  teacherDrafts.clear();
+  state = fresh();
+  storageError = false;
+  save();
+  message = '';
+  history.replaceState(null, '', '#predict');
+  feedback('A new session is ready.');
+  window.scrollTo(0, 0);
 });
 
 app.addEventListener('click', event => {
@@ -313,9 +375,55 @@ app.addEventListener('click', event => {
   feedback(state.hints[id] === hints[id].length ? 'Both hints are open above. Try your next step.' : 'A hint is open above.');
 });
 
+async function requestDraft(formElement, review) {
+  if (!review || pendingDraft) return;
+  if (Date.now() < nextRequest) return feedback('Wait a few seconds before asking for another draft. You can use the rule-based draft meanwhile.');
+  const code = new FormData(formElement).get('accessCode');
+  if (!code || !/^[\x21-\x7e]{16,256}$/.test(code)) return feedback('Enter a valid teacher access code to request a draft.');
+
+  const controller = new AbortController();
+  pendingDraft = controller;
+  nextRequest = Date.now() + 8000;
+  feedback('Requesting a Gemini draft…');
+  let result;
+  let serviceStatus;
+  try {
+    const response = await fetch('./api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + code },
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(13000)]),
+      cache: 'no-store',
+      body: JSON.stringify(feedbackEvidence(review.evidence)),
+    });
+    serviceStatus = response.status;
+    if (response.ok) {
+      const data = await response.json();
+      if (data.source === 'gemini' && typeof data.draft === 'string' && data.draft.trim() && data.draft.length <= 784) {
+        result = { source: 'gemini', text: data.draft };
+      }
+    }
+  } catch {
+    // The local rule-based draft is available even if the network fails.
+  }
+  if (pendingDraft !== controller) return;
+  pendingDraft = undefined;
+  if (active !== 'teacher' || !state.reviews.includes(review)) return;
+  if (result) {
+    teacherDrafts.set(review, result);
+    return feedback('Gemini draft ready for teacher review.');
+  }
+  teacherDrafts.delete(review);
+  const reason = serviceStatus === 401 ? 'The teacher access code was not accepted.'
+    : serviceStatus === 429 ? 'The feedback service has reached its request limit.' : 'Gemini feedback is unavailable.';
+  feedback(reason + ' The rule-based fallback is ready for review.');
+}
+
 app.addEventListener('submit', event => {
   event.preventDefault();
   const id = event.target.dataset.form;
+  if (id.startsWith('generate-')) {
+    return requestDraft(event.target, state.reviews.find(review => id === 'generate-' + review.id));
+  }
   const data = capture(event.target);
   if (id === 'predict') {
     if (!data.reason.trim()) return feedback('Add a short reason for your prediction.');
@@ -364,21 +472,28 @@ app.addEventListener('submit', event => {
     }
     if (revise.wood.warm !== retest[0].warm) return feedback('Update your revised claim to match your latest retest.');
     const evidence = structuredClone({ predict, pair, fixed, retest, revise, transfer, investigation: investigate, history: state.history });
-    state.reviews.push({ id: state.reviews.length + 1, evidence, draft: draftFeedback(evidence) });
+    state.reviews.push({ id: state.reviews.length + 1, evidence });
     return feedback('Your work was sent. Teacher feedback will appear in this notebook.');
   }
   if (id.startsWith('review-')) {
     const review = state.reviews.find(item => id === 'review-' + item.id);
     const override = event.submitter?.value === 'override';
     if (override && !data.override.trim()) return feedback('Write your feedback before sharing an override.');
-    review.text = override ? data.override.trim() : review.draft;
-    review.status = override ? 'Teacher override shared' : 'Draft approved';
+    const suggestion = suggestedDraft(review);
+    review.text = override ? data.override.trim() : suggestion.text;
+    review.source = override ? 'teacher' : suggestion.source;
+    review.status = override ? 'Overridden' : 'Approved';
     review.outcomes = outcomes.map((_, i) => data['outcome' + i]);
     return feedback(`Feedback shared for submission ${review.id}.`);
   }
 });
 
 window.addEventListener('hashchange', () => {
+  if (active === 'teacher') {
+    pendingDraft?.abort();
+    pendingDraft = undefined;
+    teacherDrafts.clear();
+  }
   message = '';
   render('h1');
   window.scrollTo(0, 0);

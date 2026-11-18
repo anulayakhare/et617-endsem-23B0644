@@ -19,8 +19,9 @@ body { margin: 0; }
   color: white;
   padding: .9rem max(1rem, calc((100% - 68rem) / 2));
 }
-.site-header nav { display: flex; flex-wrap: wrap; gap: 1rem; }
+.site-header nav { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem 1rem; }
 .site-header a { color: inherit; }
+.site-header button { color: white; background: transparent; border-color: #a2e1c7; }
 .brand { font-size: 1.15rem; font-weight: 750; text-decoration: none; }
 .brand span { color: #a2e1c7; margin-right: .35rem; }
 .layout { max-width: 70rem; padding: 1.4rem 1rem; margin: auto; min-height: 76vh; }
@@ -42,7 +43,7 @@ p { margin: .65rem 0 1rem; }
 form { display: grid; gap: .85rem; }
 label { display: grid; gap: .3rem; font-weight: 650; }
 input, select, textarea, button { font: inherit; }
-select, textarea { width: 100%; padding: .55rem; border: 1px solid #748f87; border-radius: .4rem; background: white; color: var(--ink); }
+select, textarea, input[type="password"] { width: 100%; padding: .55rem; border: 1px solid #748f87; border-radius: .4rem; background: white; color: var(--ink); }
 textarea { min-height: 5rem; resize: vertical; }
 fieldset { min-width: 0; margin: 0; border: 1px solid var(--line); border-radius: .5rem; }
 legend { font-weight: 700; }
@@ -50,6 +51,7 @@ legend { font-weight: 700; }
 .actions { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap; margin-top: .35rem; }
 button, .button { display: inline-block; border: 1px solid var(--green); border-radius: .45rem; background: var(--green); color: white; padding: .52rem .85rem; font-weight: 700; min-height: 2.75rem; cursor: pointer; text-decoration: none; }
 .secondary { color: var(--green); background: white; }
+button:disabled { opacity: .6; cursor: wait; }
 :focus-visible { outline: .18rem solid #a35a13; outline-offset: .18rem; }
 .rod { display: grid; grid-template-columns: 1fr 1fr; gap: .2rem .75rem; text-align: center; margin: 1rem 0; }
 .rod strong { padding: .3rem; border-radius: .35rem; }
@@ -60,6 +62,13 @@ button, .button { display: inline-block; border: 1px solid var(--green); border-
 table { border-collapse: collapse; width: 100%; font-size: .92rem; }
 th, td { text-align: left; padding: .48rem .55rem; border-bottom: 1px solid var(--line); }
 td { overflow-wrap: anywhere; }
+.rate-chart { margin: 1rem 0; padding: .75rem; border: 1px solid var(--line); border-radius: .5rem; }
+.rate-chart figcaption { font-weight: 700; }
+.rate-chart small { display: block; font-weight: 500; }
+.rate-chart ol { list-style: none; padding: 0; margin: .75rem 0 0; }
+.rate-chart li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .2rem .65rem; margin-top: .65rem; }
+.rate-track { grid-column: 1 / -1; height: .65rem; background: #e1ece6; border-radius: .2rem; }
+.rate-track div { height: 100%; background: #00644f; border-radius: .2rem; }
 dl { display: grid; gap: .35rem; }
 dt { font-weight: 700; }
 dd { margin: 0 0 .45rem; white-space: pre-wrap; overflow-wrap: anywhere; }
